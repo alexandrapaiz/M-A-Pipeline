@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import openai
 
 @st.cache_data
 def load_data():
@@ -20,11 +21,10 @@ def load_data():
     pipeline_df['Notes'] = pipeline_df['Notes'].astype(str)
     pipeline_df['Tags'] = pipeline_df['Tags'].astype(str)
 
-    # Standardize names (remove things like (HENKEL), etc.)
     def standardize_name(name):
         if pd.isna(name):
             return ''
-        return re.sub(r'\s*\(.*?\)\s*', '', name).strip().upper()
+        return re.sub(r'\s*\(.*?\)\s*', '', str(name)).strip().upper()
 
     factbook_df['STANDARD_NAME'] = factbook_df['MARCA'].apply(standardize_name)
     pipeline_df['STANDARD_NAME'] = pipeline_df['Name'].apply(standardize_name)
@@ -34,17 +34,33 @@ def load_data():
 def main():
     st.title("M&A PDC Buy-side Search Tool")
 
+    api_key = st.text_input("Enter your OpenAI API key for AI summary", type="password")
+
     factbook_df, pipeline_df = load_data()
 
-    search_options = sorted(
-        set(factbook_df['STANDARD_NAME'].dropna()) |
-        set(factbook_df['COMPANY_CLEAN'].dropna()) |
-        set(pipeline_df['STANDARD_NAME'].dropna())
-    )
+    # Safe build of search strings
+    def safe_str(val):
+        return str(val).strip().upper() if pd.notna(val) else ""
 
-    search_term = st.selectbox("Search for a brand or company", search_options)
+    def build_search_string(row):
+        marca = str(row['MARCA']).strip() if pd.notna(row['MARCA']) else ""
+        std_name = str(row['STANDARD_NAME']).strip() if pd.notna(row['STANDARD_NAME']) else ""
+        if safe_str(row['MARCA']) == safe_str(row['STANDARD_NAME']):
+            return marca
+        else:
+            return f"{marca} - {std_name}"
 
-    if search_term:
+    search_strings = factbook_df.apply(build_search_string, axis=1).dropna().unique()
+    search_options = sorted(search_strings)
+
+    search_display = st.selectbox("Search for a brand or company", search_options)
+
+    if search_display:
+        if " - " in search_display:
+            search_term = search_display.split(" - ")[-1].strip().upper()
+        else:
+            search_term = search_display.strip().upper()
+
         factbook_results = factbook_df[
             (factbook_df['STANDARD_NAME'] == search_term) |
             (factbook_df['COMPANY_CLEAN'] == search_term)
@@ -63,7 +79,6 @@ def main():
             suffixes=('_Factbook', '_Pipeline')
         )
 
-        # Attach Added Tags column
         if 'tag_log' in st.session_state and st.session_state['tag_log']:
             tag_df = pd.DataFrame(st.session_state['tag_log'])
             if not merged_results.empty:
@@ -120,8 +135,32 @@ def main():
         else:
             st.info("No merged or Pipeline data found for this search term.")
 
+        st.subheader("AI Summary (Ownership & Brand Info)")
+        
+        if api_key:
+            client = openai.OpenAI(api_key=api_key)
+            if st.button("Generate AI Summary"):
+                with st.spinner("Generating summary..."):
+                    try:
+                        prompt = (
+                            f"You are a factual assistant for M&A research. "
+                            f"Summarize publicly known facts about the latin american brand {search_term}. "
+                            f"Give a very brief overview. Then, Focus on brand ownership, parent company, and corporate structure. "
+                            f"Do not speculate or fabricate information. If no public information is known, say so. Make the entire answer very direct and concise. "
+                        )
+                        response = client.chat.completions.create(
+                            model="gpt-4",
+                            messages=[{"role": "user", "content": prompt}],
+                            max_tokens=300
+                        )
+                        summary = response.choices[0].message.content.strip()
+                        st.success("AI Summary generated:")
+                        st.write(summary)
+                    except Exception as e:
+                        st.error(f"Error generating summary: {str(e)}")
+
         st.subheader("Add a Tag")
-        new_tag = st.text_input("Enter a new tag for this search term")
+        new_tag = st.text_input("Enter a new tag for this search term", key="new_tag_input")
         if st.button("Add Tag"):
             if new_tag.strip():
                 if 'tag_log' not in st.session_state:
@@ -131,17 +170,9 @@ def main():
             else:
                 st.warning("Please enter a valid tag.")
 
-        # Download
-        if not merged_results.empty:
-            csv_data = merged_results.to_csv(index=False).encode('utf-8')
-        elif not pipeline_results.empty:
-            csv_data = pipeline_results.to_csv(index=False).encode('utf-8')
-        else:
-            csv_data = b""
-
-        if csv_data:
-            st.download_button("Download Results as CSV", data=csv_data, file_name="results.csv", mime="text/csv")
-
+        if 'tag_log' in st.session_state and st.session_state['tag_log']:
+            st.write("Added tags this session:")
+            st.dataframe(pd.DataFrame(st.session_state['tag_log']))
 
 if __name__ == "__main__":
     main()
