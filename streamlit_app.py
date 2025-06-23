@@ -145,7 +145,7 @@ def main():
                         prompt = (
                             f"You are a factual assistant for M&A research. "
                             f"Summarize publicly known facts about the latin american brand {search_term}. "
-                            f"Give a very brief overview. Then, Focus on brand ownership, parent company, and corporate structure. "
+                            f"Give a very brief overview of the brand. Then,  if possible mention brand ownership, parent company, and corporate structure. "
                             f"Do not speculate or fabricate information. If no public information is known, say so. Make the entire answer very direct and concise. "
                         )
                         response = client.chat.completions.create(
